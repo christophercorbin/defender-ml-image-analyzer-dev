@@ -5,7 +5,7 @@ from botocore.exceptions import ClientError
 
 # Get arguments
 parser = argparse.ArgumentParser(description="Set the environment.")
-parser.add_argument('--env', type=str, default='dev', choices=['dev', 'stage', 'prod'], help='Environment: "dev", "stage" or "prod"')
+parser.add_argument('--env', type=str, default='dev', choices=['dev', 'stage', 'prod', 'personal'], help='Environment: "dev", "stage", "prod", or "personal"')
 parser.add_argument('--image-digest', type=str, help='Specific image digest to use (optional)')
 args = parser.parse_args()
 
@@ -18,15 +18,22 @@ if args.env == 'dev':
 elif args.env == 'stage':
     role = 'arn:aws:iam::517812868058:role/aws-sagemaker-role'
     registry = '517812868058.dkr.ecr.us-east-1.amazonaws.com'
-else:
+elif args.env == 'prod':
     role = 'arn:aws:iam::770820631445:role/dme-sagemaker-role'
     registry = '770820631445.dkr.ecr.us-east-1.amazonaws.com'
+else:  # personal environment
+    # Get current AWS account ID for personal environment
+    sts = boto3.client('sts')
+    account_id = sts.get_caller_identity()['Account']
+    role = f'arn:aws:iam::{account_id}:role/SageMaker-ExecutionRole'
+    registry = f'{account_id}.dkr.ecr.us-east-1.amazonaws.com'
+    print(f'Using personal environment with account: {account_id}')
 
 # Initialize clients
 sagemaker = boto3.client('sagemaker', region_name='us-east-1')
 ecr = boto3.client('ecr', region_name='us-east-1')
 
-model_name = 'defenderImageAnalyzer'
+model_name = 'defenderImageAnalyzerPersonal' if args.env == 'personal' else 'defenderImageAnalyzer'
 
 # Get the specific image digest to use
 if args.image_digest:
@@ -35,20 +42,23 @@ if args.image_digest:
 else:
     # Get the latest image digest from ECR
     try:
+        repo_name = 'defender-image-analyzer-personal' if args.env == 'personal' else 'defender-image-analyzer'
         response = ecr.describe_images(
-            repositoryName='defender-image-analyzer',
+            repositoryName=repo_name,
             imageIds=[{'imageTag': 'latest'}]
         )
         if response['imageDetails']:
             latest_digest = response['imageDetails'][0]['imageDigest']
-            image_url = f'{registry}/defender-image-analyzer@{latest_digest}'
+            repo_name = 'defender-image-analyzer-personal' if args.env == 'personal' else 'defender-image-analyzer'
+            image_url = f'{registry}/{repo_name}@{latest_digest}'
             print(f'Using latest image digest from ECR: {latest_digest}')
         else:
             raise Exception("No image found with 'latest' tag")
     except ClientError as e:
         print(f'Error fetching image digest: {e}')
         # Fallback to tag-based reference (not recommended for production)
-        image_url = f'{registry}/defender-image-analyzer:latest'
+        repo_name = 'defender-image-analyzer-personal' if args.env == 'personal' else 'defender-image-analyzer'
+        image_url = f'{registry}/{repo_name}:latest'
         print('Warning: Falling back to tag-based reference')
 
 print(f'Image URL: {image_url}')
