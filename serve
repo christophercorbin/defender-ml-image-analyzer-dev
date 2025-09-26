@@ -1,0 +1,2 @@
+#!/bin/bash
+gunicorn --chdir /opt/ml/code/ -b 0.0.0.0:8080 image-analyzer:app

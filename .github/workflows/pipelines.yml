@@ -1,0 +1,526 @@
+name: CICD pipelines
+
+on:
+  push:
+    branches:
+      - dev
+      - master
+  pull_request:
+    branches:
+      - dev
+      - master
+
+jobs:
+  pr-build-image:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.base_ref == 'dev'
+    permissions:
+        id-token: write
+        contents: read  
+    steps:
+      - name: Checkout repository for testing
+        uses: actions/checkout@v4
+
+      - name: Get short Git commit SHA
+        id: vars
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS Credentials for Non-Prod
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::722568544242:role/Github-CICD 
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Only need to run build and deploy to ECR during push
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-push-ecr
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: defender-image-analyzer
+          COMMIT_SHA: ${{ steps.vars.outputs.sha }}
+          ECR_REGISTRY_BASE: 763104351884.dkr.ecr.us-east-1.amazonaws.com
+          AWS_REGION: us-east-1
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY_BASE
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -t $ECR_REGISTRY/$ECR_REPOSITORY:$COMMIT_SHA .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$COMMIT_SHA
+          echo "ecr_repository=$ECR_REPOSITORY" >> $GITHUB_OUTPUT
+        
+  cicd-dev:
+    # needs: [test] # tests will be done after PR is merged.
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    permissions:
+      id-token: write
+      contents: read    
+    steps:
+      - name: Checkout repository for testing
+        uses: actions/checkout@v4
+
+      - name: Get short Git commit SHA
+        id: vars
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS Credentials for dev & stage
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::722568544242:role/Github-CICD
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+    # remove the existing model, create a new one and update the endpoints
+      - name: Delete the existing model
+        env:
+          MODEL_NAME: defenderImageAnalyzer
+        run: |
+          aws sagemaker delete-model --model-name $MODEL_NAME --region us-east-1
+      
+      - name: Create and update the model and endpoints
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'  # Adjust Python version
+
+      - name: Install dependencies
+        run: | 
+          pip install -r requirements.txt 
+          python3 model/create.py --env dev
+          python3 model/update_endpoint_c6i2x.py --env dev
+          python3 model/update_endpoint_c5i.py --env dev
+          wait
+          echo "created the model and updated the endpoints"
+    
+     # we will fetch the latest image digest, and compare it with the deployed SageMaker model's image hash for both endpoints
+      - name: Get Latest Image Digest from ECR
+        id: get-ecr-image-digest
+        env:
+          ECR_REPOSITORY: defender-image-analyzer
+          AWS_REGION: us-east-1
+        run: |
+          # Fetch the latest image digest (SHA256) from ECR
+          LATEST_IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name $ECR_REPOSITORY \
+            --region $AWS_REGION \
+            --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageDigest' \
+            --output text) 
+          echo "LATEST_IMAGE_DIGEST=$LATEST_IMAGE_DIGEST" >> $GITHUB_ENV
+          echo "Latest ECR Image Digest: $LATEST_IMAGE_DIGEST"         
+
+    # Wait for few minutes before checking endpoint status and hash
+      - name: Wait for SageMaker Endpoint to be Ready
+        run: |
+          echo "Waiting for SageMaker endpoints to be ready..."
+          sleep 180
+    
+    # Check the endpoints status
+      - name: Check SageMaker Endpoint Status, and compare ResolvedImage Hash
+        shell: bash  # Ensures script runs in Bash
+        env:
+          MAX_RETRIES: 10
+          ENDPOINT_NAME: defenderImageAnalyzerEndpointC5i
+          AWS_REGION: us-east-1
+          RETRY_INTERVAL: 180 # 3 mins
+        run: |
+          for ((i=1; i<=MAX_RETRIES; i++)); do
+            RESPONSE=$(aws sagemaker describe-endpoint --region $AWS_REGION --endpoint-name $ENDPOINT_NAME)
+            STATUS=$(echo "$RESPONSE" | jq -r '.EndpointStatus')
+            echo "Attempt $i: Current Status: $STATUS"
+
+            if [ "$STATUS" == "InService" ]; then
+              echo "✅ SageMaker Endpoint $ENDPOINT_NAME is ready!"
+              echo "Checking the deply commit hash..."
+              
+              RESOLVED_IMAGE_HASH=$(echo "$RESPONSE" | jq -r '.ProductionVariants[0].DeployedImages[0].ResolvedImage' | cut -d'@' -f2)
+              
+              echo "RESOLVED_IMAGE_HASH=$RESOLVED_IMAGE_HASH" >> $GITHUB_ENV
+              
+              echo "Comparing ECR Digest ($LATEST_IMAGE_DIGEST) with SageMaker Hash ($RESOLVED_IMAGE_HASH)..."
+              if [ "$LATEST_IMAGE_DIGEST" == "$RESOLVED_IMAGE_HASH" ]; then
+                echo "✅ Image Hashes Match! Deployment is consistent."
+                exit 0
+              else
+                echo "❌ Image Hash Mismatch! SageMaker is running an outdated image."
+                exit 1  # Fail pipeline if hashes do not match
+              fi
+            fi
+
+            echo "⏳ Endpoint not ready yet. Waiting for $RETRY_INTERVAL seconds before retrying..."
+            sleep $RETRY_INTERVAL
+          done
+
+          echo "❌ Endpoint did not reach InService state after $MAX_RETRIES attempts."
+          exit 1  # Fail pipeline if endpoint is not ready after $MAX_RETRIES attempts
+
+    # Check the endpoints status
+      - name: Check SageMaker Endpoint Status, and compare ResolvedImage Hash
+        shell: bash  # Ensures script runs in Bash
+        env:
+          MAX_RETRIES: 10
+          ENDPOINT_NAME: defenderImageAnalyzerEndpointC6i2x
+          AWS_REGION: us-east-1
+          RETRY_INTERVAL: 180 # 3 mins
+        run: |
+          for ((i=1; i<=MAX_RETRIES; i++)); do
+            RESPONSE=$(aws sagemaker describe-endpoint --region $AWS_REGION --endpoint-name $ENDPOINT_NAME)
+            STATUS=$(echo "$RESPONSE" | jq -r '.EndpointStatus')
+            echo "Attempt $i: Current Status: $STATUS"
+
+            if [ "$STATUS" == "InService" ]; then
+              echo "✅ SageMaker Endpoint $ENDPOINT_NAME is ready!"
+              echo "Checking the deply commit hash..."
+              
+              RESOLVED_IMAGE_HASH=$(echo "$RESPONSE" | jq -r '.ProductionVariants[0].DeployedImages[0].ResolvedImage' | cut -d'@' -f2)
+              
+              echo "RESOLVED_IMAGE_HASH=$RESOLVED_IMAGE_HASH" >> $GITHUB_ENV
+              
+              echo "Comparing ECR Digest ($LATEST_IMAGE_DIGEST) with SageMaker Hash ($RESOLVED_IMAGE_HASH)..."
+              if [ "$LATEST_IMAGE_DIGEST" == "$RESOLVED_IMAGE_HASH" ]; then
+                echo "✅ Image Hashes Match! Deployment is consistent."
+                exit 0
+              else
+                echo "❌ Image Hash Mismatch! SageMaker is running an outdated image."
+                exit 1  # Fail pipeline if hashes do not match
+              fi
+            fi
+
+            echo "⏳ Endpoint not ready yet. Waiting for $RETRY_INTERVAL seconds before retrying..."
+            sleep $RETRY_INTERVAL
+          done
+
+          echo "❌ Endpoint did not reach InService state after $MAX_RETRIES attempts."
+          exit 1  # Fail pipeline if endpoint is not ready after $MAX_RETRIES attempts
+
+    # Start and wait for unit tests to finish
+      - name: Run Integration tests
+        run: | 
+          python3 -m unittest testing/integration/*.py
+          echo "integration tests passed"
+  
+  cicd-stage:
+    # needs: [test] # tests should already passed during PR
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/stage' && github.event_name == 'push'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout repository for testing
+        uses: actions/checkout@v4
+
+      - name: Get short Git commit SHA
+        id: vars
+        run: echo "::set-output name=sha::$(git rev-parse --short HEAD)"
+
+      - name: Configure AWS Credentials for prod
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::517812868058:role/Github-CICD
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-push-ecr
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: defender-image-analyzer
+          COMMIT_SHA: ${{ steps.vars.outputs.sha }}
+          ECR_REGISTRY_BASE: 763104351884.dkr.ecr.us-east-1.amazonaws.com
+          AWS_REGION: us-east-1
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY_BASE
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -t $ECR_REGISTRY/$ECR_REPOSITORY:$COMMIT_SHA .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$COMMIT_SHA
+          echo "::set-output name=ecr_repository::$ECR_REPOSITORY"
+
+      # remove the existing model, create a new one and update the endpoints
+      - name: Delete the existing model
+        env:
+          MODEL_NAME: defenderImageAnalyzer
+        run: |
+          aws sagemaker delete-model --model-name $MODEL_NAME --region us-east-1
+
+      - name: Create and update the model and endpoints
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'  # Adjust Python version
+
+      - name: Install dependencies
+        run: | 
+          pip install -r requirements.txt 
+          python3 model/create.py --env stage
+          python3 model/update_endpoint_c6i2x.py --env stage
+          python3 model/update_endpoint_c5i.py --env stage
+          wait
+          echo "created the model and updated the endpoints"
+      
+      # we will fetch the latest image digest, and compare it with the deployed SageMaker model's image hash for both endpoints
+      - name: Get Latest Image Digest from ECR
+        id: get-ecr-image-digest
+        env:
+          ECR_REPOSITORY: defender-image-analyzer
+          AWS_REGION: us-east-1
+        run: |
+          # Fetch the latest image digest (SHA256) from ECR
+          LATEST_IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name $ECR_REPOSITORY \
+            --region $AWS_REGION \
+            --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageDigest' \
+            --output text) 
+          echo "LATEST_IMAGE_DIGEST=$LATEST_IMAGE_DIGEST" >> $GITHUB_ENV
+          echo "Latest ECR Image Digest: $LATEST_IMAGE_DIGEST"  
+
+      # Wait for few minutes before checking endpoint status and hash
+      - name: Wait for SageMaker Endpoint to be Ready
+        run: |
+          echo "Waiting for SageMaker endpoints to be ready..."
+          sleep 180
+
+      # Check the endpoints status
+      - name: Check SageMaker Endpoint Status, and compare ResolvedImage Hash
+        shell: bash  # Ensures script runs in Bash
+        env:
+          MAX_RETRIES: 10
+          ENDPOINT_NAME: defenderImageAnalyzerEndpointC5i
+          AWS_REGION: us-east-1
+          RETRY_INTERVAL: 180 # 3 mins
+        run: |
+          for ((i=1; i<=MAX_RETRIES; i++)); do
+            RESPONSE=$(aws sagemaker describe-endpoint --region $AWS_REGION --endpoint-name $ENDPOINT_NAME)
+            STATUS=$(echo "$RESPONSE" | jq -r '.EndpointStatus')
+            echo "Attempt $i: Current Status: $STATUS"
+
+            if [ "$STATUS" == "InService" ]; then
+              echo "✅ SageMaker Endpoint $ENDPOINT_NAME is ready!"
+              echo "Checking the deply commit hash..."
+              
+              RESOLVED_IMAGE_HASH=$(echo "$RESPONSE" | jq -r '.ProductionVariants[0].DeployedImages[0].ResolvedImage' | cut -d'@' -f2)
+              
+              echo "RESOLVED_IMAGE_HASH=$RESOLVED_IMAGE_HASH" >> $GITHUB_ENV
+              
+              echo "Comparing ECR Digest ($LATEST_IMAGE_DIGEST) with SageMaker Hash ($RESOLVED_IMAGE_HASH)..."
+              if [ "$LATEST_IMAGE_DIGEST" == "$RESOLVED_IMAGE_HASH" ]; then
+                echo "✅ Image Hashes Match! Deployment is consistent."
+                exit 0
+              else
+                echo "❌ Image Hash Mismatch! SageMaker is running an outdated image."
+                exit 1  # Fail pipeline if hashes do not match
+              fi
+            fi
+
+            echo "⏳ Endpoint not ready yet. Waiting for $RETRY_INTERVAL seconds before retrying..."
+            sleep $RETRY_INTERVAL
+          done
+
+          echo "❌ Endpoint did not reach InService state after $MAX_RETRIES attempts."
+          exit 1  # Fail pipeline if endpoint is not ready after $MAX_RETRIES attempts
+
+      # Check the endpoints status
+      - name: Check SageMaker Endpoint Status, and compare ResolvedImage Hash
+        shell: bash  # Ensures script runs in Bash
+        env:
+          MAX_RETRIES: 10
+          ENDPOINT_NAME: defenderImageAnalyzerEndpointC6i2x
+          AWS_REGION: us-east-1
+          RETRY_INTERVAL: 180 # 3 mins
+        run: |
+          for ((i=1; i<=MAX_RETRIES; i++)); do
+            RESPONSE=$(aws sagemaker describe-endpoint --region $AWS_REGION --endpoint-name $ENDPOINT_NAME)
+            STATUS=$(echo "$RESPONSE" | jq -r '.EndpointStatus')
+            echo "Attempt $i: Current Status: $STATUS"
+
+            if [ "$STATUS" == "InService" ]; then
+              echo "✅ SageMaker Endpoint $ENDPOINT_NAME is ready!"
+              echo "Checking the deply commit hash..."
+              
+              RESOLVED_IMAGE_HASH=$(echo "$RESPONSE" | jq -r '.ProductionVariants[0].DeployedImages[0].ResolvedImage' | cut -d'@' -f2)
+              
+              echo "RESOLVED_IMAGE_HASH=$RESOLVED_IMAGE_HASH" >> $GITHUB_ENV
+              
+              echo "Comparing ECR Digest ($LATEST_IMAGE_DIGEST) with SageMaker Hash ($RESOLVED_IMAGE_HASH)..."
+              if [ "$LATEST_IMAGE_DIGEST" == "$RESOLVED_IMAGE_HASH" ]; then
+                echo "✅ Image Hashes Match! Deployment is consistent."
+                exit 0
+              else
+                echo "❌ Image Hash Mismatch! SageMaker is running an outdated image."
+                exit 1  # Fail pipeline if hashes do not match
+              fi
+            fi
+
+            echo "⏳ Endpoint not ready yet. Waiting for $RETRY_INTERVAL seconds before retrying..."
+            sleep $RETRY_INTERVAL
+          done
+
+          echo "❌ Endpoint did not reach InService state after $MAX_RETRIES attempts."
+          exit 1  # Fail pipeline if endpoint is not ready after $MAX_RETRIES attempts
+
+  cicd-prod:
+    # needs: [test] # tests should already passed during PR
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout repository for testing
+        uses: actions/checkout@v4
+
+      - name: Get short Git commit SHA
+        id: vars
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS Credentials for prod
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::770820631445:role/Github-CICD
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-push-ecr
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: defender-image-analyzer
+          COMMIT_SHA: ${{ steps.vars.outputs.sha }}
+          ECR_REGISTRY_BASE: 763104351884.dkr.ecr.us-east-1.amazonaws.com
+          AWS_REGION: us-east-1
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY_BASE
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -t $ECR_REGISTRY/$ECR_REPOSITORY:$COMMIT_SHA .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$COMMIT_SHA
+          echo "ecr_repository=$ECR_REPOSITORY" >> $GITHUB_OUTPUT
+
+      # remove the existing model, create a new one and update the endpoints
+      - name: Delete the existing model
+        env:
+          MODEL_NAME: defenderImageAnalyzer
+        run: |
+          aws sagemaker delete-model --model-name $MODEL_NAME --region us-east-1
+
+      - name: Create and update the model and endpoints
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'  # Adjust Python version
+
+      - name: Install dependencies
+        run: | 
+          pip install -r requirements.txt 
+          python3 model/create.py --env prod
+          python3 model/update_endpoint_c6i2x.py --env prod
+          python3 model/update_endpoint_c5i.py --env prod
+          wait
+          echo "created the model and updated the endpoints"
+      
+      # we will fetch the latest image digest, and compare it with the deployed SageMaker model's image hash for both endpoints
+      - name: Get Latest Image Digest from ECR
+        id: get-ecr-image-digest
+        env:
+          ECR_REPOSITORY: defender-image-analyzer
+          AWS_REGION: us-east-1
+        run: |
+          # Fetch the latest image digest (SHA256) from ECR
+          LATEST_IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name $ECR_REPOSITORY \
+            --region $AWS_REGION \
+            --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageDigest' \
+            --output text) 
+          echo "LATEST_IMAGE_DIGEST=$LATEST_IMAGE_DIGEST" >> $GITHUB_ENV
+          echo "Latest ECR Image Digest: $LATEST_IMAGE_DIGEST"  
+
+      # Wait for few minutes before checking endpoint status and hash
+      - name: Wait for SageMaker Endpoint to be Ready
+        run: |
+          echo "Waiting for SageMaker endpoints to be ready..."
+          sleep 180
+
+      # Check the endpoints status
+      - name: Check SageMaker Endpoint Status, and compare ResolvedImage Hash
+        shell: bash  # Ensures script runs in Bash
+        env:
+          MAX_RETRIES: 10
+          ENDPOINT_NAME: defenderImageAnalyzerEndpointC5i
+          AWS_REGION: us-east-1
+          RETRY_INTERVAL: 180 # 3 mins
+        run: |
+          for ((i=1; i<=MAX_RETRIES; i++)); do
+            RESPONSE=$(aws sagemaker describe-endpoint --region $AWS_REGION --endpoint-name $ENDPOINT_NAME)
+            STATUS=$(echo "$RESPONSE" | jq -r '.EndpointStatus')
+            echo "Attempt $i: Current Status: $STATUS"
+
+            if [ "$STATUS" == "InService" ]; then
+              echo "✅ SageMaker Endpoint $ENDPOINT_NAME is ready!"
+              echo "Checking the deply commit hash..."
+              
+              RESOLVED_IMAGE_HASH=$(echo "$RESPONSE" | jq -r '.ProductionVariants[0].DeployedImages[0].ResolvedImage' | cut -d'@' -f2)
+              
+              echo "RESOLVED_IMAGE_HASH=$RESOLVED_IMAGE_HASH" >> $GITHUB_ENV
+              
+              echo "Comparing ECR Digest ($LATEST_IMAGE_DIGEST) with SageMaker Hash ($RESOLVED_IMAGE_HASH)..."
+              if [ "$LATEST_IMAGE_DIGEST" == "$RESOLVED_IMAGE_HASH" ]; then
+                echo "✅ Image Hashes Match! Deployment is consistent."
+                exit 0
+              else
+                echo "❌ Image Hash Mismatch! SageMaker is running an outdated image."
+                exit 1  # Fail pipeline if hashes do not match
+              fi
+            fi
+
+            echo "⏳ Endpoint not ready yet. Waiting for $RETRY_INTERVAL seconds before retrying..."
+            sleep $RETRY_INTERVAL
+          done
+
+          echo "❌ Endpoint did not reach InService state after $MAX_RETRIES attempts."
+          exit 1  # Fail pipeline if endpoint is not ready after $MAX_RETRIES attempts
+
+      # Check the endpoints status
+      - name: Check SageMaker Endpoint Status, and compare ResolvedImage Hash
+        shell: bash  # Ensures script runs in Bash
+        env:
+          MAX_RETRIES: 10
+          ENDPOINT_NAME: defenderImageAnalyzerEndpointC6i2x
+          AWS_REGION: us-east-1
+          RETRY_INTERVAL: 180 # 3 mins
+        run: |
+          for ((i=1; i<=MAX_RETRIES; i++)); do
+            RESPONSE=$(aws sagemaker describe-endpoint --region $AWS_REGION --endpoint-name $ENDPOINT_NAME)
+            STATUS=$(echo "$RESPONSE" | jq -r '.EndpointStatus')
+            echo "Attempt $i: Current Status: $STATUS"
+
+            if [ "$STATUS" == "InService" ]; then
+              echo "✅ SageMaker Endpoint $ENDPOINT_NAME is ready!"
+              echo "Checking the deply commit hash..."
+              
+              RESOLVED_IMAGE_HASH=$(echo "$RESPONSE" | jq -r '.ProductionVariants[0].DeployedImages[0].ResolvedImage' | cut -d'@' -f2)
+              
+              echo "RESOLVED_IMAGE_HASH=$RESOLVED_IMAGE_HASH" >> $GITHUB_ENV
+              
+              echo "Comparing ECR Digest ($LATEST_IMAGE_DIGEST) with SageMaker Hash ($RESOLVED_IMAGE_HASH)..."
+              if [ "$LATEST_IMAGE_DIGEST" == "$RESOLVED_IMAGE_HASH" ]; then
+                echo "✅ Image Hashes Match! Deployment is consistent."
+                exit 0
+              else
+                echo "❌ Image Hash Mismatch! SageMaker is running an outdated image."
+                exit 1  # Fail pipeline if hashes do not match
+              fi
+            fi
+
+            echo "⏳ Endpoint not ready yet. Waiting for $RETRY_INTERVAL seconds before retrying..."
+            sleep $RETRY_INTERVAL
+          done
+
+          echo "❌ Endpoint did not reach InService state after $MAX_RETRIES attempts."
+          exit 1  # Fail pipeline if endpoint is not ready after $MAX_RETRIES attempts

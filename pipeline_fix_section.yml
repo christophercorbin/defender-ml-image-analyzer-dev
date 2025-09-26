@@ -1,0 +1,33 @@
+# Replace the "Create and update the model and endpoints" section in your GitHub Actions pipeline
+# with this improved version that passes the ECR digest to the model creation script
+
+      - name: Create and update the model and endpoints
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'  # Adjust Python version
+
+      - name: Install dependencies and create model with specific digest
+        env:
+          IMAGE_DIGEST: ${{ env.LATEST_IMAGE_DIGEST }}
+          ENVIRONMENT: dev  # Change this per environment
+        run: | 
+          pip install -r requirements.txt 
+          echo "Creating model with digest: $IMAGE_DIGEST"
+          python3 model/create_fixed.py --env $ENVIRONMENT --image-digest $IMAGE_DIGEST
+          echo "Model created with specific digest"
+
+      - name: Update endpoints with force refresh
+        env:
+          ENVIRONMENT: dev  # Change this per environment
+        run: |
+          echo "Updating endpoints for environment: $ENVIRONMENT"
+          python3 model/update_endpoint_c6i2x.py --env $ENVIRONMENT
+          python3 model/update_endpoint_c5i.py --env $ENVIRONMENT
+          wait
+          echo "Endpoints updated"
+
+      # Increase wait time for SageMaker to fully update
+      - name: Wait for SageMaker Endpoint to be Ready (Extended)
+        run: |
+          echo "Waiting for SageMaker endpoints to be ready..."
+          sleep 300  # Increased from 180 to 300 seconds (5 minutes)
