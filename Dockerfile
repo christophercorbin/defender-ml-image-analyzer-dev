@@ -1,5 +1,5 @@
 # Use an official Python runtime as a parent image
-FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-gpu-py312-cu122-ubuntu22.04-sagemaker
+FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-cpu-py312-ubuntu22.04-sagemaker
 
 # Rtrieve the new key directly from Nginx and adding it to your system's list of trusted keys
 # This is to prevent GPG signing key expiration when updating nginx
