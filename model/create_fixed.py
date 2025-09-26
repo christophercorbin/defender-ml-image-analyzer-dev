@@ -25,7 +25,31 @@ else:  # personal environment
     # Get current AWS account ID for personal environment
     sts = boto3.client('sts')
     account_id = sts.get_caller_identity()['Account']
-    role = f'arn:aws:iam::{account_id}:role/SageMaker-ExecutionRole'
+    
+    # Try common SageMaker role names
+    iam = boto3.client('iam')
+    possible_roles = [
+        'SageMaker-ExecutionRole',
+        'AmazonSageMaker-ExecutionRole',
+        f'SageMaker-ExecutionRole-{account_id}',
+        'service-role/SageMakerRole'
+    ]
+    
+    role = None
+    for role_name in possible_roles:
+        try:
+            iam.get_role(RoleName=role_name)
+            role = f'arn:aws:iam::{account_id}:role/{role_name}'
+            print(f'Found SageMaker role: {role_name}')
+            break
+        except iam.exceptions.NoSuchEntityException:
+            continue
+    
+    if not role:
+        # Fallback to default name (will be created by local script if needed)
+        role = f'arn:aws:iam::{account_id}:role/SageMaker-ExecutionRole'
+        print(f'Using default SageMaker role name (may need creation)')
+        
     registry = f'{account_id}.dkr.ecr.us-east-1.amazonaws.com'
     print(f'Using personal environment with account: {account_id}')
 
@@ -37,7 +61,8 @@ model_name = 'defenderImageAnalyzerPersonal' if args.env == 'personal' else 'def
 
 # Get the specific image digest to use
 if args.image_digest:
-    image_url = f'{registry}/defender-image-analyzer@{args.image_digest}'
+    repo_name = 'defender-image-analyzer-personal' if args.env == 'personal' else 'defender-image-analyzer'
+    image_url = f'{registry}/{repo_name}@{args.image_digest}'
     print(f'Using provided image digest: {args.image_digest}')
 else:
     # Get the latest image digest from ECR
