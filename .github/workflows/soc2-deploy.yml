@@ -44,121 +44,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Checkout SOC 2 hardened files
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
         run: |
-          echo "📥 Retrieving SOC 2 hardened configuration..."
-          # Get the hardened Dockerfile from our SOC2-image-analyser directory
-          git clone https://github.com/${{ github.repository_owner }}/SOC2-image-analyser.git ../SOC2-image-analyser 2>/dev/null || echo "Using local SOC2 files"
-          
-          # Copy hardened Dockerfile if available from external repo, otherwise create one
-          if [ -f "../SOC2-image-analyser/security/hardened/Dockerfile.hardened" ]; then
-            cp ../SOC2-image-analyser/security/hardened/Dockerfile.hardened ./Dockerfile.hardened
-          else
-            echo "Creating hardened Dockerfile..."
-            cat > Dockerfile.hardened << 'EOF'
-          # Security-Hardened Dockerfile for SOC 2 Compliance (97.2% Score)
-          FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-cpu-py312-ubuntu22.04-sagemaker
-          
-          # Security: Set non-interactive mode and create build user
-          ARG DEBIAN_FRONTEND=noninteractive
-          ARG BUILD_USER=appuser
-          ARG BUILD_UID=1000
-          
-          # Security: Create non-root user (SOC 2 CC6.1.1)
-          RUN groupadd -r ${BUILD_USER} && \
-              useradd -r -g ${BUILD_USER} -u ${BUILD_UID} -s /bin/false ${BUILD_USER}
-          
-          # Security: Retrieve nginx key securely and upgrade all packages with critical patches
-          RUN curl -fsSL https://nginx.org/keys/nginx_signing.key | apt-key add - && \
-              # Security: Comprehensive system updates (SOC 2 CC6.2.1)
-              apt-get update && \
-              apt-get dist-upgrade -y && \
-              # Install required libraries with security-focused packages
-              apt-get install -y --no-install-recommends \
-                  libgl1-mesa-glx \
-                  ca-certificates \
-                  curl \
-                  gnupg2 \
-                  openssl \
-                  libssl3 \
-                  libc6 \
-                  python3-pip \
-                  python3-dev
-          
-          # Security: Remove unnecessary packages (SOC 2 CC6.1.2)
-          RUN apt-get remove --purge -y \
-                  emacs emacs-bin-common emacs-common \
-                  gcc g++ make \
-                  apt-utils dpkg-dev || true && \
-              # Security: Comprehensive cleanup (SOC 2 CC6.2.2 & CC9.1.2)
-              apt-get autoremove -y && \
-              apt-get autoclean && \
-              rm -rf /var/lib/apt/lists/* && \
-              rm -rf /var/cache/apt/* && \
-              rm -rf /tmp/* && \
-              rm -rf /var/tmp/* && \
-              # Security: Remove sensitive system files (SOC 2 CC9.1.1)
-              rm -f /etc/shadow- && \
-              rm -f /etc/passwd- && \
-              rm -f /etc/group-
-          
-          # Security: Set working directory
-          WORKDIR /opt/ml/code
-          
-          # Security: Upgrade pip securely (SOC 2 CC8.1.1)
-          RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
-          
-          # Copy requirements.txt
-          COPY requirements.txt .
-          
-          # Security: Install Python packages with security controls
-          RUN python3 -m pip install --no-cache-dir \
-                  --trusted-host pypi.org \
-                  --trusted-host pypi.python.org \
-                  --trusted-host files.pythonhosted.org \
-                  -r requirements.txt && \
-              python3 -m pip install --no-cache-dir deepface==0.0.93 && \
-              python3 -m pip cache purge && \
-              rm -rf /root/.cache/pip && \
-              rm -rf /tmp/* && \
-              rm requirements.txt
-          
-          # Security: Copy code with proper permissions (SOC 2 CC6.1.3)
-          COPY --chown=${BUILD_UID}:${BUILD_UID} image-analyzer.py /opt/ml/code/
-          COPY --chown=${BUILD_UID}:${BUILD_UID} serve /opt/ml/code/serve
-          COPY --chown=${BUILD_UID}:${BUILD_UID} testing/assets /opt/ml/testing/assets/
-          COPY --chown=${BUILD_UID}:${BUILD_UID} testing/integration/test_endpoints.py /opt/ml/testing/integration/test_endpoints.py
-          
-          # Security: Set proper file permissions and create directories
-          RUN chmod 755 /opt/ml/code/serve && \
-              chmod 644 /opt/ml/code/image-analyzer.py && \
-              chmod -R 644 /opt/ml/testing/ && \
-              mkdir -p /opt/ml/model && \
-              chown -R ${BUILD_UID}:${BUILD_UID} /opt/ml/ && \
-              mkdir -p /tmp && chmod 1777 /tmp
-          
-          # Security: Set secure Python environment (SOC 2 CC8.1.2)
-          ENV PYTHONPATH=/opt/ml/code \
-              PYTHONUNBUFFERED=1 \
-              PYTHONDONTWRITEBYTECODE=1 \
-              PYTHONOPTIMIZE=1 \
-              TMPDIR=/tmp \
-              PYTHONNOUSERSITE=1
-          
-          # Security: Switch to non-root user (SOC 2 CC6.1.1 & CC9.1.4)
-          USER ${BUILD_UID}:${BUILD_UID}
-          
-          # Security: Add health check (SOC 2 CC7.1.1)
-          HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-              CMD curl -f http://localhost:8080/ping || exit 1
-          
-          # Security: Expose only required port (SOC 2 CC6.2.3)
-          EXPOSE 8080
-          
-          # Security: Use secure entry point
-          ENTRYPOINT ["/opt/ml/code/serve"]
-          EOF
+          echo "🔐 Logging into AWS ECR for base image access..."
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin 763104351884.dkr.ecr.us-east-1.amazonaws.com
+
+      - name: Verify SOC 2 hardened Dockerfile exists
+        run: |
+          echo "📥 Using existing SOC 2 hardened Dockerfile..."
+          if [ ! -f "Dockerfile.hardened" ]; then
+            echo "❌ Dockerfile.hardened not found in repository!"
+            exit 1
           fi
+          echo "✅ Found Dockerfile.hardened in repository"
+          echo "🔍 Dockerfile.hardened preview:"
+          head -10 Dockerfile.hardened
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -227,7 +134,7 @@ jobs:
   soc2-deploy:
     runs-on: ubuntu-latest
     needs: soc2-compliance-test
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/soc2-hardened' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -268,61 +175,16 @@ jobs:
             --image-scanning-configuration scanOnPush=true \
             --region $AWS_REGION || echo "Scanning may already be enabled"
 
-      - name: Setup SOC 2 hardened Dockerfile
+      - name: Verify SOC 2 hardened Dockerfile exists
         run: |
-          # Use the same Dockerfile creation as in compliance test
-          cat > Dockerfile.hardened << 'EOF'
-          # Security-Hardened Dockerfile for SOC 2 Compliance (97.2% Score)
-          FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-gpu-py312-cu122-ubuntu22.04-sagemaker
-          
-          ARG DEBIAN_FRONTEND=noninteractive
-          ARG BUILD_USER=appuser
-          ARG BUILD_UID=1000
-          
-          RUN groupadd -r ${BUILD_USER} && \
-              useradd -r -g ${BUILD_USER} -u ${BUILD_UID} -s /bin/false ${BUILD_USER}
-          
-          RUN curl -fsSL https://nginx.org/keys/nginx_signing.key | apt-key add - && \
-              apt-get update && \
-              apt-get dist-upgrade -y && \
-              apt-get install -y --no-install-recommends \
-                  libgl1-mesa-glx ca-certificates curl gnupg2 \
-                  openssl libssl3 libc6 python3-pip python3-dev
-          
-          RUN apt-get remove --purge -y \
-                  emacs emacs-bin-common emacs-common gcc g++ make \
-                  apt-utils dpkg-dev || true && \
-              apt-get autoremove -y && apt-get autoclean && \
-              rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/* /var/tmp/* && \
-              rm -f /etc/shadow- /etc/passwd- /etc/group-
-          
-          WORKDIR /opt/ml/code
-          RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
-          COPY requirements.txt .
-          RUN python3 -m pip install --no-cache-dir \
-                  --trusted-host pypi.org --trusted-host pypi.python.org \
-                  --trusted-host files.pythonhosted.org -r requirements.txt && \
-              python3 -m pip install --no-cache-dir deepface==0.0.93 && \
-              python3 -m pip cache purge && rm -rf /root/.cache/pip /tmp/* && rm requirements.txt
-          
-          COPY --chown=${BUILD_UID}:${BUILD_UID} image-analyzer.py /opt/ml/code/
-          COPY --chown=${BUILD_UID}:${BUILD_UID} serve /opt/ml/code/serve
-          COPY --chown=${BUILD_UID}:${BUILD_UID} testing/assets /opt/ml/testing/assets/
-          COPY --chown=${BUILD_UID}:${BUILD_UID} testing/integration/test_endpoints.py /opt/ml/testing/integration/test_endpoints.py
-          
-          RUN chmod 755 /opt/ml/code/serve && chmod 644 /opt/ml/code/image-analyzer.py && \
-              chmod -R 644 /opt/ml/testing/ && mkdir -p /opt/ml/model && \
-              chown -R ${BUILD_UID}:${BUILD_UID} /opt/ml/ && mkdir -p /tmp && chmod 1777 /tmp
-          
-          ENV PYTHONPATH=/opt/ml/code PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
-              PYTHONOPTIMIZE=1 TMPDIR=/tmp PYTHONNOUSERSITE=1
-          
-          USER ${BUILD_UID}:${BUILD_UID}
-          HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-              CMD curl -f http://localhost:8080/ping || exit 1
-          EXPOSE 8080
-          ENTRYPOINT ["/opt/ml/code/serve"]
-          EOF
+          echo "📥 Using existing SOC 2 hardened Dockerfile..."
+          if [ ! -f "Dockerfile.hardened" ]; then
+            echo "❌ Dockerfile.hardened not found in repository!"
+            exit 1
+          fi
+          echo "✅ Found Dockerfile.hardened in repository"
+          echo "🔍 Dockerfile.hardened preview:"
+          head -10 Dockerfile.hardened
 
       - name: Build and push SOC 2 hardened Docker image
         env:
