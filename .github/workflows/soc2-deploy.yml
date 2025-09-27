@@ -93,8 +93,8 @@ jobs:
           
           # Test 1: Verify non-root user execution
           echo "🔐 Testing non-root user compliance..."
-          docker run --rm --platform linux/amd64 soc2-hardened:test id
-          USER_ID=$(docker run --rm --platform linux/amd64 soc2-hardened:test id -u)
+          docker run --rm --platform linux/amd64 --entrypoint='' soc2-hardened:test id
+          USER_ID=$(docker run --rm --platform linux/amd64 --entrypoint='' soc2-hardened:test id -u)
           if [ "$USER_ID" == "0" ]; then
             echo "❌ SOC 2 Violation: Container running as root (CC6.1.1)"
             exit 1
