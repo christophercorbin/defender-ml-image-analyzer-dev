@@ -28,7 +28,7 @@ on:
 
 env:
   # SOC 2 Hardened ECR Repository (separate from main)
-  SOC2_ECR_REPOSITORY: defender-image-analyzer-soc2-hardened
+  SOC2_ECR_REPOSITORY: defender-image-analyzer-soc2
   AWS_REGION: us-east-1
   # SOC 2 SageMaker Model/Endpoint Names
   SOC2_MODEL_NAME: defenderImageAnalyzerSOC2Hardened
@@ -57,7 +57,7 @@ jobs:
             echo "Creating hardened Dockerfile..."
             cat > Dockerfile.hardened << 'EOF'
           # Security-Hardened Dockerfile for SOC 2 Compliance (97.2% Score)
-          FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-gpu-py312-cu122-ubuntu22.04-sagemaker
+          FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-cpu-py312-ubuntu22.04-sagemaker
           
           # Security: Set non-interactive mode and create build user
           ARG DEBIAN_FRONTEND=noninteractive

@@ -1,6 +1,6 @@
 # Multi-stage build for security hardening
 # Stage 1: Build dependencies and application
-FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-gpu-py312-cu122-ubuntu22.04-sagemaker AS builder
+FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-cpu-py312-ubuntu22.04-sagemaker AS builder
 
 # Set build arguments for security
 ARG DEBIAN_FRONTEND=noninteractive
