@@ -214,10 +214,19 @@ jobs:
           echo "🏷️ Commit: $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-$COMMIT_SHA"
           echo "🏷️ Latest: $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-latest"
 
+      - name: Get AWS Account ID
+        id: account-id
+        run: |
+          echo "🔍 Getting AWS Account ID..."
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "account-id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "✅ AWS Account ID: $ACCOUNT_ID"
+
       - name: Deploy SOC 2 hardened model to SageMaker
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ENVIRONMENT: ${{ steps.vars.outputs.environment }}
+          AWS_ACCOUNT_ID: ${{ steps.account-id.outputs.account-id }}
         run: |
           echo "🚀 Deploying SOC 2 hardened model to SageMaker ($ENVIRONMENT)..."
           
@@ -238,6 +247,49 @@ jobs:
           from datetime import datetime
           
           sagemaker = boto3.client('sagemaker', region_name='${{ env.AWS_REGION }}')
+          sts = boto3.client('sts')
+          iam = boto3.client('iam')
+          
+          # Get account ID
+          account_id = sts.get_caller_identity()['Account']
+          print(f"Using AWS Account ID: {account_id}")
+          
+          # Check if SageMaker execution role exists, create if not
+          role_name = 'SageMakerExecutionRole'
+          role_arn = f'arn:aws:iam::{account_id}:role/{role_name}'
+          
+          try:
+              iam.get_role(RoleName=role_name)
+              print(f"✅ SageMaker execution role exists: {role_arn}")
+          except iam.exceptions.NoSuchEntityException:
+              print(f"⚠️  SageMaker execution role not found. Creating role: {role_name}")
+              # Create trust policy
+              trust_policy = {
+                  "Version": "2012-10-17",
+                  "Statement": [{
+                      "Effect": "Allow",
+                      "Principal": {"Service": "sagemaker.amazonaws.com"},
+                      "Action": "sts:AssumeRole"
+                  }]
+              }
+              
+              # Create role
+              iam.create_role(
+                  RoleName=role_name,
+                  AssumeRolePolicyDocument=json.dumps(trust_policy),
+                  Description='SageMaker execution role for SOC 2 hardened deployment'
+              )
+              
+              # Attach required policies
+              policies = [
+                  'arn:aws:iam::aws:policy/AmazonSageMakerFullAccess',
+                  'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess'
+              ]
+              
+              for policy in policies:
+                  iam.attach_role_policy(RoleName=role_name, PolicyArn=policy)
+              
+              print(f"✅ SageMaker execution role created: {role_arn}")
           
           model_name = "$SOC2_MODEL_NAME-$ENVIRONMENT-" + datetime.now().strftime("%Y%m%d%H%M%S")
           image_uri = "$ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-latest"
@@ -255,7 +307,7 @@ jobs:
                           'SECURITY_HARDENED': 'true'
                       }
                   },
-                  ExecutionRoleArn='arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/SageMakerExecutionRole'
+                  ExecutionRoleArn=role_arn
               )
               print(f"✅ SOC 2 hardened model created: {model_name}")
               
