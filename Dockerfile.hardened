@@ -1,4 +1,4 @@
-# Single-stage SOC 2 Hardened Dockerfile (Optimized for Speed)
+# SOC 2 Hardened Dockerfile - OpenCV Headless Approach
 FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-cpu-py312-ubuntu22.04-sagemaker
 
 # Security: Set non-interactive mode and create build user
@@ -10,11 +10,10 @@ ARG BUILD_UID=1000
 RUN groupadd -r ${BUILD_USER} && \
     useradd -r -g ${BUILD_USER} -u ${BUILD_UID} -s /bin/false ${BUILD_USER}
 
-# Security: Comprehensive system updates (SOC 2 CC6.2.1) - FAST VERSION
+# Security: System updates and minimal dependencies (SOC 2 CC6.2.1)
 RUN apt-get update && \
     apt-get dist-upgrade -y && \
     apt-get install -y --no-install-recommends \
-        libgl1-mesa-glx \
         ca-certificates \
         curl \
         gnupg2 \
@@ -23,27 +22,8 @@ RUN apt-get update && \
         libc6 \
         python3-pip \
         python3-dev \
-        # OpenCV/DeepFace system dependencies
-        libglib2.0-0 \
-        libgthread-2.0-0 \
-        libgtk-3-0 \
-        libgdk-pixbuf2.0-0 \
-        libpango-1.0-0 \
-        libcairo2 \
-        libatk1.0-0 \
-        # Additional graphics libraries for cv2
-        libxext6 \
-        libxrender1 \
-        libfontconfig1 \
-        libice6 \
-        libsm6 \
-        libxrandr2 \
-        libxss1 \
-        libxtst6 \
-        # Critical OpenGL libraries for OpenCV
-        libgl1 \
-        libgl1-mesa-dev \
-        libglu1-mesa-dev && \
+        # Minimal libraries for headless OpenCV
+        libglib2.0-0 && \
     # Security: Remove unnecessary packages (SOC 2 CC6.1.2)
     apt-get remove --purge -y \
         emacs emacs-bin-common emacs-common \
@@ -70,13 +50,28 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 # Copy requirements.txt
 COPY requirements.txt .
 
-# Security: Install Python packages with security controls - OPTIMIZED
+# Security: Install Python packages with headless OpenCV approach
 RUN python3 -m pip install --no-cache-dir \
         --trusted-host pypi.org \
         --trusted-host pypi.python.org \
         --trusted-host files.pythonhosted.org \
         -r requirements.txt && \
-    python3 -m pip install --no-cache-dir deepface==0.0.93 && \
+    # Install opencv-python-headless instead of regular opencv-python
+    python3 -m pip install --no-cache-dir opencv-python-headless==4.10.0.84 && \
+    # Install DeepFace without opencv dependency (we provide our own)
+    python3 -m pip install --no-cache-dir --no-deps deepface==0.0.93 && \
+    # Install DeepFace dependencies manually (without opencv-python)
+    python3 -m pip install --no-cache-dir \
+        pandas>=0.23.4 \
+        gdown>=3.10.1 \
+        tqdm>=4.30.0 \
+        Pillow>=5.2.0 \
+        tensorflow>=1.9.0 \
+        keras>=2.2.0 \
+        flask-cors>=4.0.1 \
+        mtcnn>=0.1.0 \
+        retina-face>=0.0.1 \
+        fire>=0.4.0 && \
     python3 -m pip cache purge && \
     rm -rf /root/.cache/pip && \
     rm -rf /tmp/* && \
