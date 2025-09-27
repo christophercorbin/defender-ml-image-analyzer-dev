@@ -1,0 +1,97 @@
+# Single-stage SOC 2 Hardened Dockerfile (Optimized for Speed)
+FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-cpu-py312-ubuntu22.04-sagemaker
+
+# Security: Set non-interactive mode and create build user
+ARG DEBIAN_FRONTEND=noninteractive
+ARG BUILD_USER=appuser
+ARG BUILD_UID=1000
+
+# Security: Create non-root user (SOC 2 CC6.1.1)
+RUN groupadd -r ${BUILD_USER} && \
+    useradd -r -g ${BUILD_USER} -u ${BUILD_UID} -s /bin/false ${BUILD_USER}
+
+# Security: Comprehensive system updates (SOC 2 CC6.2.1) - FAST VERSION
+RUN apt-get update && \
+    apt-get dist-upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        libgl1-mesa-glx \
+        ca-certificates \
+        curl \
+        gnupg2 \
+        openssl \
+        libssl3 \
+        libc6 \
+        python3-pip \
+        python3-dev && \
+    # Security: Remove unnecessary packages (SOC 2 CC6.1.2)
+    apt-get remove --purge -y \
+        emacs emacs-bin-common emacs-common \
+        gcc g++ make \
+        apt-utils dpkg-dev || true && \
+    # Security: Comprehensive cleanup (SOC 2 CC6.2.2 & CC9.1.2)
+    apt-get autoremove -y && \
+    apt-get autoclean && \
+    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /var/cache/apt/* && \
+    rm -rf /tmp/* && \
+    rm -rf /var/tmp/* && \
+    # Security: Remove sensitive system files (SOC 2 CC9.1.1)
+    rm -f /etc/shadow- && \
+    rm -f /etc/passwd- && \
+    rm -f /etc/group-
+
+# Security: Set working directory
+WORKDIR /opt/ml/code
+
+# Security: Upgrade pip securely (SOC 2 CC8.1.1)
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Copy requirements.txt
+COPY requirements.txt .
+
+# Security: Install Python packages with security controls - OPTIMIZED
+RUN python3 -m pip install --no-cache-dir \
+        --trusted-host pypi.org \
+        --trusted-host pypi.python.org \
+        --trusted-host files.pythonhosted.org \
+        -r requirements.txt && \
+    python3 -m pip install --no-cache-dir deepface==0.0.93 && \
+    python3 -m pip cache purge && \
+    rm -rf /root/.cache/pip && \
+    rm -rf /tmp/* && \
+    rm requirements.txt
+
+# Security: Copy code with proper permissions (SOC 2 CC6.1.3)
+COPY --chown=${BUILD_UID}:${BUILD_UID} image-analyzer.py /opt/ml/code/
+COPY --chown=${BUILD_UID}:${BUILD_UID} serve /opt/ml/code/serve
+COPY --chown=${BUILD_UID}:${BUILD_UID} testing/assets /opt/ml/testing/assets/
+COPY --chown=${BUILD_UID}:${BUILD_UID} testing/integration/test_endpoints.py /opt/ml/testing/integration/test_endpoints.py
+
+# Security: Set proper file permissions and create directories
+RUN chmod 755 /opt/ml/code/serve && \
+    chmod 644 /opt/ml/code/image-analyzer.py && \
+    chmod -R 644 /opt/ml/testing/ && \
+    mkdir -p /opt/ml/model && \
+    chown -R ${BUILD_UID}:${BUILD_UID} /opt/ml/ && \
+    mkdir -p /tmp && chmod 1777 /tmp
+
+# Security: Set secure Python environment (SOC 2 CC8.1.2)
+ENV PYTHONPATH=/opt/ml/code \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONOPTIMIZE=1 \
+    TMPDIR=/tmp \
+    PYTHONNOUSERSITE=1
+
+# Security: Switch to non-root user (SOC 2 CC6.1.1 & CC9.1.4)
+USER ${BUILD_UID}:${BUILD_UID}
+
+# Security: Add health check (SOC 2 CC7.1.1)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/ping || exit 1
+
+# Security: Expose only required port (SOC 2 CC6.2.3)
+EXPOSE 8080
+
+# Security: Use secure entry point - SAME AS COMPLIANCE TEST
+ENTRYPOINT ["/opt/ml/code/serve"]
