@@ -39,7 +39,11 @@ RUN apt-get update && \
         libsm6 \
         libxrandr2 \
         libxss1 \
-        libxtst6 && \
+        libxtst6 \
+        # Critical OpenGL libraries for OpenCV
+        libgl1 \
+        libgl1-mesa-dev \
+        libglu1-mesa-dev && \
     # Security: Remove unnecessary packages (SOC 2 CC6.1.2)
     apt-get remove --purge -y \
         emacs emacs-bin-common emacs-common \
