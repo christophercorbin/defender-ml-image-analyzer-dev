@@ -5,8 +5,10 @@ from botocore.exceptions import ClientError
 
 # Get arguments
 parser = argparse.ArgumentParser(description="Set the environment.")
-parser.add_argument('--env', type=str, default='dev', choices=['dev', 'stage', 'prod', 'personal'], help='Environment: "dev", "stage", "prod", or "personal"')
+parser.add_argument('--env', type=str, default='dev', choices=['dev', 'stage', 'prod', 'personal', 'soc2'], help='Environment: "dev", "stage", "prod", "personal", or "soc2"')
 parser.add_argument('--image-digest', type=str, help='Specific image digest to use (optional)')
+parser.add_argument('--repository-name', type=str, help='ECR repository name (optional, overrides default)')
+parser.add_argument('--model-name', type=str, help='SageMaker model name (optional, overrides default)')
 args = parser.parse_args()
 
 print(f'Creating model for: {args.env}')
@@ -21,14 +23,15 @@ elif args.env == 'stage':
 elif args.env == 'prod':
     role = 'arn:aws:iam::770820631445:role/dme-sagemaker-role'
     registry = '770820631445.dkr.ecr.us-east-1.amazonaws.com'
-else:  # personal environment
-    # Get current AWS account ID for personal environment
+else:  # personal or soc2 environment
+    # Get current AWS account ID for personal/soc2 environment
     sts = boto3.client('sts')
     account_id = sts.get_caller_identity()['Account']
     
     # Try common SageMaker role names
     iam = boto3.client('iam')
     possible_roles = [
+        'SageMakerExecutionRole',  # SOC 2 preferred
         'SageMaker-ExecutionRole',
         'AmazonSageMaker-ExecutionRole',
         f'SageMaker-ExecutionRole-{account_id}',
@@ -46,35 +49,50 @@ else:  # personal environment
             continue
     
     if not role:
-        # Fallback to default name (will be created by local script if needed)
-        role = f'arn:aws:iam::{account_id}:role/SageMaker-ExecutionRole'
+        # Fallback to default name (will be created by deployment script if needed)
+        role = f'arn:aws:iam::{account_id}:role/SageMakerExecutionRole'
         print(f'Using default SageMaker role name (may need creation)')
         
     registry = f'{account_id}.dkr.ecr.us-east-1.amazonaws.com'
-    print(f'Using personal environment with account: {account_id}')
+    print(f'Using {args.env} environment with account: {account_id}')
 
 # Initialize clients
 sagemaker = boto3.client('sagemaker', region_name='us-east-1')
 ecr = boto3.client('ecr', region_name='us-east-1')
 
-model_name = 'defenderImageAnalyzerPersonal' if args.env == 'personal' else 'defenderImageAnalyzer'
+# Determine model name
+if args.model_name:
+    model_name = args.model_name
+elif args.env == 'personal':
+    model_name = 'defenderImageAnalyzerPersonal'
+elif args.env == 'soc2':
+    model_name = 'defenderImageAnalyzerSOC2Hardened'
+else:
+    model_name = 'defenderImageAnalyzer'
+
+# Determine repository name
+if args.repository_name:
+    repo_name = args.repository_name
+elif args.env == 'personal':
+    repo_name = 'defender-image-analyzer-personal'
+elif args.env == 'soc2':
+    repo_name = 'defender-image-analyzer-soc2'
+else:
+    repo_name = 'defender-image-analyzer'
 
 # Get the specific image digest to use
 if args.image_digest:
-    repo_name = 'defender-image-analyzer-personal' if args.env == 'personal' else 'defender-image-analyzer'
     image_url = f'{registry}/{repo_name}@{args.image_digest}'
     print(f'Using provided image digest: {args.image_digest}')
 else:
     # Get the latest image digest from ECR
     try:
-        repo_name = 'defender-image-analyzer-personal' if args.env == 'personal' else 'defender-image-analyzer'
         response = ecr.describe_images(
             repositoryName=repo_name,
             imageIds=[{'imageTag': 'latest'}]
         )
         if response['imageDetails']:
             latest_digest = response['imageDetails'][0]['imageDigest']
-            repo_name = 'defender-image-analyzer-personal' if args.env == 'personal' else 'defender-image-analyzer'
             image_url = f'{registry}/{repo_name}@{latest_digest}'
             print(f'Using latest image digest from ECR: {latest_digest}')
         else:
@@ -82,7 +100,6 @@ else:
     except ClientError as e:
         print(f'Error fetching image digest: {e}')
         # Fallback to tag-based reference (not recommended for production)
-        repo_name = 'defender-image-analyzer-personal' if args.env == 'personal' else 'defender-image-analyzer'
         image_url = f'{registry}/{repo_name}:latest'
         print('Warning: Falling back to tag-based reference')
 
@@ -125,15 +142,27 @@ except ClientError as e:
 print(f'Creating model with image: {image_url}')
 
 # Create model with explicit image digest
+# Prepare environment variables based on deployment type
+env_vars = {
+    'SAGEMAKER_PROGRAM': 'image-analyzer.py',
+    'FORCE_REFRESH': str(int(time.time()))  # Timestamp to force refresh
+}
+
+# Add SOC 2 specific environment variables
+if args.env == 'soc2':
+    env_vars.update({
+        'SAGEMAKER_CONTAINER_LOG_LEVEL': '20',
+        'SAGEMAKER_REGION': 'us-east-1',
+        'SOC2_COMPLIANT': 'true',
+        'SECURITY_HARDENED': 'true'
+    })
+    print('Adding SOC 2 compliance environment variables')
+
 create_model_response = sagemaker.create_model(
     ModelName=model_name,
     PrimaryContainer={
         'Image': image_url,
-        # Force SageMaker to pull fresh image by adding environment variable
-        'Environment': {
-            'SAGEMAKER_PROGRAM': 'image-analyzer.py',
-            'FORCE_REFRESH': str(int(time.time()))  # Timestamp to force refresh
-        }
+        'Environment': env_vars
     },
     ExecutionRoleArn=role
 )

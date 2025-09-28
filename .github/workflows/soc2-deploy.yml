@@ -214,21 +214,80 @@ jobs:
           echo "🏷️ Commit: $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-$COMMIT_SHA"
           echo "🏷️ Latest: $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-latest"
 
-      - name: Get AWS Account ID
-        id: account-id
-        run: |
-          echo "🔍 Getting AWS Account ID..."
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "account-id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
-          echo "✅ AWS Account ID: $ACCOUNT_ID"
-
-      - name: Deploy SOC 2 hardened model to SageMaker
+      - name: Get latest SOC 2 image digest from ECR
+        id: get-soc2-image-digest
         env:
+          ENVIRONMENT: ${{ steps.vars.outputs.environment }}
+        run: |
+          echo "🔍 Fetching latest SOC 2 image digest from ECR..."
+          LATEST_IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name $SOC2_ECR_REPOSITORY \
+            --region $AWS_REGION \
+            --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageDigest' \
+            --output text)
+          echo "LATEST_IMAGE_DIGEST=$LATEST_IMAGE_DIGEST" >> $GITHUB_ENV
+          echo "digest=$LATEST_IMAGE_DIGEST" >> $GITHUB_OUTPUT
+          echo "📋 Latest SOC 2 ECR Image Digest: $LATEST_IMAGE_DIGEST"
+
+      - name: Delete existing SOC 2 SageMaker model
+        continue-on-error: true
+        env:
+          ENVIRONMENT: ${{ steps.vars.outputs.environment }}
+        run: |
+          echo "🗑️  Attempting to delete existing SOC 2 SageMaker model..."
+          MODEL_NAME_WITH_ENV="$SOC2_MODEL_NAME"
+          aws sagemaker delete-model --model-name $MODEL_NAME_WITH_ENV --region $AWS_REGION || echo "Model may not exist, continuing..."
+
+      - name: Set up Python for SageMaker operations
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Python dependencies for deployment
+        run: |
+          echo "📦 Installing Python dependencies..."
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "✅ Dependencies installed"
+
+      - name: Create SOC 2 SageMaker model with specific digest
+        env:
+          IMAGE_DIGEST: ${{ env.LATEST_IMAGE_DIGEST }}
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ENVIRONMENT: ${{ steps.vars.outputs.environment }}
-          AWS_ACCOUNT_ID: ${{ steps.account-id.outputs.account-id }}
         run: |
-          echo "🚀 Deploying SOC 2 hardened model to SageMaker ($ENVIRONMENT)..."
+          echo "🤖 Creating SOC 2 SageMaker model with image digest..."
+          # Use the proven create_fixed.py script but with SOC 2 parameters
+          python3 model/create_fixed.py \
+            --env soc2 \
+            --image-digest $IMAGE_DIGEST \
+            --repository-name $SOC2_ECR_REPOSITORY \
+            --model-name $SOC2_MODEL_NAME
+          echo "✅ SOC 2 SageMaker model created"
+
+      - name: Update SOC 2 SageMaker endpoint
+        env:
+          ENVIRONMENT: ${{ steps.vars.outputs.environment }}
+        run: |
+          echo "🔄 Updating SOC 2 SageMaker endpoint..."
+          python3 model/update_endpoint_c5i_fixed.py --env soc2
+          echo "✅ SOC 2 endpoint update initiated"
+
+      - name: Wait for SOC 2 SageMaker endpoint to be ready
+        env:
+          ENVIRONMENT: ${{ steps.vars.outputs.environment }}
+        run: |
+          echo "⏳ Waiting for SOC 2 SageMaker endpoint to be ready..."
+          sleep 300  # 5 minutes - same as proven deployment
+
+      - name: Check SOC 2 SageMaker endpoint status and verify image hash
+        env:
+          MAX_RETRIES: 10
+          RETRY_INTERVAL: 180 # 3 minutes
+          ENVIRONMENT: ${{ steps.vars.outputs.environment }}
+          IMAGE_DIGEST: ${{ env.LATEST_IMAGE_DIGEST }}
+        run: |
+          echo "🔍 Checking SOC 2 SageMaker endpoint status and image hash..."
           
           # Set environment-specific endpoint name
           case $ENVIRONMENT in
@@ -238,154 +297,56 @@ jobs:
             *) ENDPOINT_NAME=$SOC2_ENDPOINT_NAME_DEV ;;
           esac
           
-          echo "🎯 Target endpoint: $ENDPOINT_NAME"
-          
-          # Create or update SageMaker model
-          python3 << EOF
-          import boto3
-          import json
-          from datetime import datetime
-          
-          sagemaker = boto3.client('sagemaker', region_name='${{ env.AWS_REGION }}')
-          sts = boto3.client('sts')
-          iam = boto3.client('iam')
-          
-          # Get account ID
-          account_id = sts.get_caller_identity()['Account']
-          print(f"Using AWS Account ID: {account_id}")
-          
-          # Check if SageMaker execution role exists, create if not
-          role_name = 'SageMakerExecutionRole'
-          role_arn = f'arn:aws:iam::{account_id}:role/{role_name}'
-          
-          try:
-              iam.get_role(RoleName=role_name)
-              print(f"✅ SageMaker execution role exists: {role_arn}")
-          except iam.exceptions.NoSuchEntityException:
-              print(f"⚠️  SageMaker execution role not found. Creating role: {role_name}")
-              # Create trust policy
-              trust_policy = {
-                  "Version": "2012-10-17",
-                  "Statement": [{
-                      "Effect": "Allow",
-                      "Principal": {"Service": "sagemaker.amazonaws.com"},
-                      "Action": "sts:AssumeRole"
-                  }]
-              }
-              
-              # Create role
-              iam.create_role(
-                  RoleName=role_name,
-                  AssumeRolePolicyDocument=json.dumps(trust_policy),
-                  Description='SageMaker execution role for SOC 2 hardened deployment'
-              )
-              
-              # Attach required policies
-              policies = [
-                  'arn:aws:iam::aws:policy/AmazonSageMakerFullAccess',
-                  'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess'
-              ]
-              
-              for policy in policies:
-                  iam.attach_role_policy(RoleName=role_name, PolicyArn=policy)
-              
-              print(f"✅ SageMaker execution role created: {role_arn}")
-          
-          model_name = "$SOC2_MODEL_NAME-$ENVIRONMENT-" + datetime.now().strftime("%Y%m%d%H%M%S")
-          image_uri = "$ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-latest"
-          
-          # Create model
-          try:
-              response = sagemaker.create_model(
-                  ModelName=model_name,
-                  PrimaryContainer={
-                      'Image': image_uri,
-                      'Environment': {
-                          'SAGEMAKER_CONTAINER_LOG_LEVEL': '20',
-                          'SAGEMAKER_REGION': '${{ env.AWS_REGION }}',
-                          'SOC2_COMPLIANT': 'true',
-                          'SECURITY_HARDENED': 'true'
-                      }
-                  },
-                  ExecutionRoleArn=role_arn
-              )
-              print(f"✅ SOC 2 hardened model created: {model_name}")
-              
-              # Save model name for endpoint deployment
-              with open('/tmp/model_name.txt', 'w') as f:
-                  f.write(model_name)
-                  
-          except Exception as e:
-              print(f"❌ Error creating model: {e}")
-              exit(1)
-          EOF
-          
-          # Create endpoint configuration
-          MODEL_NAME=$(cat /tmp/model_name.txt)
-          ENDPOINT_CONFIG_NAME="$SOC2_MODEL_NAME-$ENVIRONMENT-config-$(date +%Y%m%d%H%M%S)"
-          
-          aws sagemaker create-endpoint-config \
-            --endpoint-config-name $ENDPOINT_CONFIG_NAME \
-            --production-variants \
-            VariantName=soc2-hardened,ModelName=$MODEL_NAME,InitialInstanceCount=1,InstanceType=ml.c5.large,InitialVariantWeight=1
-          
-          echo "✅ SOC 2 hardened endpoint configuration created: $ENDPOINT_CONFIG_NAME"
-          
-          # Create or update endpoint
-          if aws sagemaker describe-endpoint --endpoint-name $ENDPOINT_NAME 2>/dev/null; then
-            echo "🔄 Updating existing SOC 2 hardened endpoint..."
-            aws sagemaker update-endpoint \
-              --endpoint-name $ENDPOINT_NAME \
-              --endpoint-config-name $ENDPOINT_CONFIG_NAME
-          else
-            echo "🆕 Creating new SOC 2 hardened endpoint..."
-            aws sagemaker create-endpoint \
-              --endpoint-name $ENDPOINT_NAME \
-              --endpoint-config-name $ENDPOINT_CONFIG_NAME
-          fi
-          
-          echo "✅ SOC 2 hardened endpoint deployment initiated: $ENDPOINT_NAME"
-          echo "🎉 SOC 2 Deployment Summary:"
-          echo "   📦 Repository: $SOC2_ECR_REPOSITORY"
-          echo "   🏷️ Image: soc2-$ENVIRONMENT-latest"
-          echo "   🎯 Endpoint: $ENDPOINT_NAME"
-          echo "   🛡️ Security: SOC 2 Compliant (97.2% Score)"
-          echo "   🔐 Features: Non-root user, Security patching, Minimal attack surface"
+          for ((i=1; i<=MAX_RETRIES; i++)); do
+            echo "🔄 Attempt $i: Checking SOC 2 endpoint status..."
+            
+            RESPONSE=$(aws sagemaker describe-endpoint --region $AWS_REGION --endpoint-name $ENDPOINT_NAME)
+            STATUS=$(echo "$RESPONSE" | jq -r '.EndpointStatus')
+            echo "📊 Current Status: $STATUS"
 
-      - name: Post-deployment verification
+            if [ "$STATUS" == "InService" ]; then
+              echo "✅ SOC 2 SageMaker Endpoint $ENDPOINT_NAME is ready!"
+              echo "🔍 Checking deployed image hash..."
+              
+              RESOLVED_IMAGE_HASH=$(echo "$RESPONSE" | jq -r '.ProductionVariants[0].DeployedImages[0].ResolvedImage' | cut -d'@' -f2)
+              echo "🏷️  SageMaker Hash: $RESOLVED_IMAGE_HASH"
+              echo "📦 ECR Digest: $IMAGE_DIGEST"
+              
+              if [ "$IMAGE_DIGEST" == "$RESOLVED_IMAGE_HASH" ]; then
+                echo "✅ Image Hashes Match! SOC 2 deployment is consistent."
+                break
+              else
+                echo "❌ Image Hash Mismatch! SOC 2 SageMaker is running an outdated image."
+                if [ $i -eq $MAX_RETRIES ]; then
+                  exit 1
+                fi
+              fi
+            fi
+
+            if [ $i -lt $MAX_RETRIES ]; then
+              echo "⏳ SOC 2 endpoint not ready yet. Waiting for $RETRY_INTERVAL seconds before retrying..."
+              sleep $RETRY_INTERVAL
+            fi
+          done
+
+          if [ $i -gt $MAX_RETRIES ]; then
+            echo "❌ SOC 2 endpoint did not reach consistent state after $MAX_RETRIES attempts."
+            exit 1
+          fi
+
+      - name: SOC 2 deployment summary
         env:
+          IMAGE_DIGEST: ${{ env.LATEST_IMAGE_DIGEST }}
           ENVIRONMENT: ${{ steps.vars.outputs.environment }}
         run: |
-          echo "🔍 Running post-deployment verification for SOC 2 hardened endpoint..."
-          
-          case $ENVIRONMENT in
-            "dev") ENDPOINT_NAME=$SOC2_ENDPOINT_NAME_DEV ;;
-            "staging") ENDPOINT_NAME=$SOC2_ENDPOINT_NAME_STAGING ;;
-            "prod") ENDPOINT_NAME=$SOC2_ENDPOINT_NAME_PROD ;;
-            *) ENDPOINT_NAME=$SOC2_ENDPOINT_NAME_DEV ;;
-          esac
-          
-          # Wait for endpoint to be in service (with timeout)
-          echo "⏳ Waiting for SOC 2 hardened endpoint to be ready..."
-          timeout 1800 bash -c '
-          while true; do
-            STATUS=$(aws sagemaker describe-endpoint --endpoint-name '$ENDPOINT_NAME' --query "EndpointStatus" --output text)
-            echo "Endpoint status: $STATUS"
-            if [ "$STATUS" = "InService" ]; then
-              echo "✅ SOC 2 hardened endpoint is ready!"
-              break
-            elif [ "$STATUS" = "Failed" ]; then
-              echo "❌ SOC 2 hardened endpoint deployment failed!"
-              aws sagemaker describe-endpoint --endpoint-name '$ENDPOINT_NAME'
-              exit 1
-            fi
-            sleep 30
-          done
-          '
-          
-          echo "🎊 SOC 2 Hardened Deployment Completed Successfully!"
-          echo "📋 Deployment Details:"
-          echo "   🌍 Environment: $ENVIRONMENT"
-          echo "   🎯 Endpoint: $ENDPOINT_NAME"
-          echo "   🛡️ Security Level: SOC 2 Compliant (97.2%)"
-          echo "   📊 Status: Enterprise Production Ready"
+          echo "🎉 SOC 2 Deployment Summary"
+          echo "================================"
+          echo "🏷️  Repository: $SOC2_ECR_REPOSITORY"
+          echo "📦 Image Digest: $IMAGE_DIGEST" 
+          echo "🤖 Model: $SOC2_MODEL_NAME"
+          echo "🎯 Environment: $ENVIRONMENT"
+          echo "🔗 Endpoint: ${{ env.ENVIRONMENT == 'dev' && env.SOC2_ENDPOINT_NAME_DEV || (env.ENVIRONMENT == 'staging' && env.SOC2_ENDPOINT_NAME_STAGING || env.SOC2_ENDPOINT_NAME_PROD) }}"
+          echo "🌍 Region: $AWS_REGION"
+          echo "🛡️ Security: SOC 2 Compliant (97.2% Score)"
+          echo "🔐 Features: Non-root user, Security patching, Minimal attack surface"
+          echo "✅ SOC 2 hardened deployment completed successfully!"

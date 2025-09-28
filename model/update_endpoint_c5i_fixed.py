@@ -6,7 +6,7 @@ import time
 
 # Get arguments
 parser = argparse.ArgumentParser(description="Set the environment.")
-parser.add_argument('--env', type=str, default='dev', choices=['dev', 'stage', 'prod', 'test', 'personal'], help='Environment: "dev", "stage", "prod", "test", or "personal"')
+parser.add_argument('--env', type=str, default='dev', choices=['dev', 'stage', 'prod', 'test', 'personal', 'soc2'], help='Environment: "dev", "stage", "prod", "test", "personal", or "soc2"')
 args = parser.parse_args()
 
 print(f'Creating / Updating endpoint for: {args.env}')
@@ -14,13 +14,18 @@ print(f'Creating / Updating endpoint for: {args.env}')
 # Initialize SageMaker client
 sagemaker = boto3.client('sagemaker', region_name='us-east-1')
 
-model_name = 'defenderImageAnalyzerPersonal' if args.env == 'personal' else 'defenderImageAnalyzer'
 if args.env == 'personal':
+    model_name = 'defenderImageAnalyzerPersonal'
     endpoint_name = 'defenderImageAnalyzerPersonalC5i'
-elif args.env in ['dev', 'stage', 'prod']:
-    endpoint_name = 'defenderImageAnalyzerEndpointC5i'
+elif args.env == 'soc2':
+    model_name = 'defenderImageAnalyzerSOC2Hardened'
+    endpoint_name = 'defenderImageAnalyzerSOC2HardenedDev'  # Default to dev for SOC 2
 else:
-    endpoint_name = 'defenderImageAnalyzerEndpointC5i-test'
+    model_name = 'defenderImageAnalyzer'
+    if args.env in ['dev', 'stage', 'prod']:
+        endpoint_name = 'defenderImageAnalyzerEndpointC5i'
+    else:
+        endpoint_name = 'defenderImageAnalyzerEndpointC5i-test'
 timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')  # More precise timestamp
 endpoint_config_name = f'{endpoint_name}-{timestamp}'
 
