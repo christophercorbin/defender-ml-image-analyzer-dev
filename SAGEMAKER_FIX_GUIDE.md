@@ -1,25 +1,25 @@
-# 🔧 SageMaker Deployment Fix Guide - Monday Action Items
+#  SageMaker Deployment Fix Guide
 
-## 🚨 Issues Being Fixed
+##  Issues Being Fixed
 
 1. **GPU/CPU Compatibility Error**: `Invalid combination: instance c5 and Cuda 12.2`
 2. **Image Hash Mismatch**: `SageMaker is running an outdated image`
 
 ---
 
-## 📁 File Changes Required
+##  File Changes Required
 
 ### **File 1: Dockerfile** 
-**Location:** `/Users/christophercorbin/Downloads/defender-ml-image-analyzer-dev/Dockerfile`
+**Location:** `./Dockerfile`
 
 **Line 2 - CRITICAL CHANGE:**
 
-**❌ Current:**
+**Current:**
 ```dockerfile
 FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-gpu-py312-cu122-ubuntu22.04-sagemaker
 ```
 
-**✅ Change to:**
+**Change to:**
 ```dockerfile
 FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-cpu-py312-ubuntu22.04-sagemaker
 ```
@@ -27,16 +27,16 @@ FROM 763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.19.0-cp
 ---
 
 ### **File 2: model/create.py**
-**Location:** `/Users/christophercorbin/Downloads/defender-ml-image-analyzer-dev/model/create.py`
+**Location:** `./model/create.py`
 
 #### **Change 1: Add digest support (Line 6)**
 
-**❌ Current Line 6:**
+**Current Line 6:**
 ```python
 parser.add_argument('--env', type=str, default='dev', choices=['dev', 'stage', 'prod'], help='Environment: "dev", "stage" or "prod"')
 ```
 
-**✅ Change to:**
+**Change to:**
 ```python
 parser.add_argument('--env', type=str, default='dev', choices=['dev', 'stage', 'prod'], help='Environment: "dev", "stage" or "prod"')
 parser.add_argument('--image-digest', type=str, help='Specific image digest to use')
@@ -44,36 +44,33 @@ parser.add_argument('--image-digest', type=str, help='Specific image digest to u
 
 #### **Change 2: Replace lines 19-25 with digest-based URLs**
 
-**❌ Current Lines 19-25:**
+**Current Lines 19-25:**
 ```python
 # Specify ECR container image URL
 if args.env == 'dev':
-    image_url = '722568544242.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer:latest'
+    image_url = '{{DEV_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com/soc2-ml-image-analyzer:latest'
 elif args.env == 'stage':
-    image_url = '517812868058.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer:latest'
+    image_url = '{{STAGE_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com/soc2-ml-image-analyzer:latest'
 else:
-    image_url = '770820631445.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer:latest'
+    image_url = '{{PROD_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com/soc2-ml-image-analyzer:latest'
 ```
 
-**✅ Replace with:**
+**Replace with:**
 ```python
+# Environment-specific ECR configuration
+env_config = {
+    'dev': '{{DEV_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com/soc2-ml-image-analyzer',
+    'stage': '{{STAGE_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com/soc2-ml-image-analyzer',
+    'prod': '{{PROD_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com/soc2-ml-image-analyzer'
+}
+
 # Specify ECR container image URL
+base_image = env_config[args.env]
 if args.image_digest:
-    if args.env == 'dev':
-        image_url = f'722568544242.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer@{args.image_digest}'
-    elif args.env == 'stage':
-        image_url = f'517812868058.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer@{args.image_digest}'
-    else:
-        image_url = f'770820631445.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer@{args.image_digest}'
+    image_url = f'{base_image}@{args.image_digest}'
     print(f'Using digest-based image: {image_url}')
 else:
-    # Fallback to latest tags
-    if args.env == 'dev':
-        image_url = '722568544242.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer:latest'
-    elif args.env == 'stage':
-        image_url = '517812868058.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer:latest'
-    else:
-        image_url = '770820631445.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer:latest'
+    image_url = f'{base_image}:latest'
     print(f'Using tag-based image: {image_url}')
 ```
 
@@ -84,7 +81,7 @@ else:
 ```python
 # Delete existing model to ensure fresh deployment
 try:
-    sagemaker.delete_model(ModelName='defenderImageAnalyzer')
+    sagemaker.delete_model(ModelName='soc2MlImageAnalyzer')
     print("✅ Deleted existing model to ensure fresh deployment")
 except Exception as e:
     print(f"ℹ️  No existing model to delete (this is normal): {e}")
@@ -95,11 +92,11 @@ print(f'Using image: {image_url}')
 
 ---
 
-## 🧪 Testing Instructions
+##  Testing Instructions
 
 ### **Step 1: Local Docker Test**
 ```bash
-cd /Users/christophercorbin/Downloads/defender-ml-image-analyzer-dev
+cd locallib
 docker build --platform linux/amd64 -t test-fix .
 ```
 **Expected:** Should build without errors
@@ -111,11 +108,6 @@ python3 model/create.py --env dev
 **Expected:** Should create model without "Invalid combination" error
 
 ### **Step 3: Full Deployment Test**
-```bash
-# Commit changes
-git add .
-git commit -m "Fix: GPU/CPU compatibility and image digest issues"
-git push origin main
 
 # Monitor GitHub Actions pipeline
 ```
@@ -136,7 +128,7 @@ git push origin main
 ```
 ✅ Docker image builds successfully
 ✅ SageMaker model created with digest: sha256:...
-✅ Endpoint 'defenderImageAnalyzerEndpointC5i' is InService
+✅ Endpoint 'soc2MlImageAnalyzerEndpointC5i' is InService
 ✅ Image hashes match! Deployment is consistent
 ✅ All verification tests passed
 ```

@@ -13,16 +13,26 @@ args = parser.parse_args()
 
 print(f'Creating model for: {args.env}')
 
-# Specify container role
-if args.env == 'dev':
-    role = 'arn:aws:iam::722568544242:role/aws-sagemaker-role'
-    registry = '722568544242.dkr.ecr.us-east-1.amazonaws.com'
-elif args.env == 'stage':
-    role = 'arn:aws:iam::517812868058:role/aws-sagemaker-role'
-    registry = '517812868058.dkr.ecr.us-east-1.amazonaws.com'
-elif args.env == 'prod':
-    role = 'arn:aws:iam::770820631445:role/dme-sagemaker-role'
-    registry = '770820631445.dkr.ecr.us-east-1.amazonaws.com'
+# Environment-specific configuration (using placeholders for security)
+# In production, these would be loaded from environment variables or AWS Parameter Store
+env_configs = {
+    'dev': {
+        'role': 'arn:aws:iam::{{DEV_ACCOUNT_ID}}:role/aws-sagemaker-role',
+        'registry': '{{DEV_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com'
+    },
+    'stage': {
+        'role': 'arn:aws:iam::{{STAGE_ACCOUNT_ID}}:role/aws-sagemaker-role',
+        'registry': '{{STAGE_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com'
+    },
+    'prod': {
+        'role': 'arn:aws:iam::{{PROD_ACCOUNT_ID}}:role/sagemaker-execution-role',
+        'registry': '{{PROD_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com'
+    }
+}
+
+if args.env in env_configs:
+    role = env_configs[args.env]['role']
+    registry = env_configs[args.env]['registry']
 else:  # personal or soc2 environment
     # Get current AWS account ID for personal/soc2 environment
     sts = boto3.client('sts')
@@ -64,21 +74,21 @@ ecr = boto3.client('ecr', region_name='us-east-1')
 if args.model_name:
     model_name = args.model_name
 elif args.env == 'personal':
-    model_name = 'defenderImageAnalyzerPersonal'
+    model_name = 'soc2MlImageAnalyzerPersonal'
 elif args.env == 'soc2':
-    model_name = 'defenderImageAnalyzerSOC2Hardened'
+    model_name = 'soc2MlImageAnalyzerHardened'
 else:
-    model_name = 'defenderImageAnalyzer'
+    model_name = 'soc2MlImageAnalyzer'
 
 # Determine repository name
 if args.repository_name:
     repo_name = args.repository_name
 elif args.env == 'personal':
-    repo_name = 'defender-image-analyzer-personal'
+    repo_name = 'soc2-ml-image-analyzer-personal'
 elif args.env == 'soc2':
-    repo_name = 'defender-image-analyzer-soc2'
+    repo_name = 'soc2-ml-image-analyzer-hardened'
 else:
-    repo_name = 'defender-image-analyzer'
+    repo_name = 'soc2-ml-image-analyzer'
 
 # Get the specific image digest to use
 if args.image_digest:

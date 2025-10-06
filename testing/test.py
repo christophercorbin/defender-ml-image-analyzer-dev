@@ -6,12 +6,11 @@ from PIL import Image
 import sys
 import argparse
 
-# You need to login to aws account before being able to use the endpoints
-# export AWS_PROFILE=722568544242_AWS-Workloads-CTO
-# export AWS_ACCESS_KEY_ID="******************" # paste the AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_SESSION_TOKEN from aws sso console
-# export AWS_SECRET_ACCESS_KEY="******************"
-# export AWS_SESSION_TOKEN="******************"
-# aws configure list # check the credentials are valid
+# Authentication Setup
+# Ensure AWS credentials are configured before running tests:
+# 1. Configure AWS CLI: aws configure
+# 2. Or use environment variables: AWS_PROFILE, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# 3. Or use IAM roles for EC2/Lambda execution
 
 # Initialize the SageMaker client
 client = boto3.client('sagemaker-runtime')
@@ -22,15 +21,19 @@ parser.add_argument('--env', type=str, default='dev', choices=['dev', 'stage', '
 # Avoid unittest argument conflict
 args, _ = parser.parse_known_args()
 
-# Determine bucket based on environment
-if args.env == 'dev' or args.env == 'test':
-    bucket = 'defender-image-reverse-search-4242'
-elif args.env == 'stage':
-    bucket = 'defender-image-reverse-search-8058'
-elif args.env == 'prod':
-    bucket = 'defender-image-reverse-search-1445'
+# Environment-specific S3 bucket configuration
+# In production, these would be loaded from environment variables or AWS Parameter Store
+env_buckets = {
+    'dev': 'soc2-ml-image-analyzer-dev-{{DEV_ACCOUNT_ID}}',
+    'test': 'soc2-ml-image-analyzer-test-{{DEV_ACCOUNT_ID}}',
+    'stage': 'soc2-ml-image-analyzer-stage-{{STAGE_ACCOUNT_ID}}',
+    'prod': 'soc2-ml-image-analyzer-prod-{{PROD_ACCOUNT_ID}}'
+}
+
+if args.env in env_buckets:
+    bucket = env_buckets[args.env]
 else:
-    raise ValueError("Invalid environment selection")
+    raise ValueError(f"Invalid environment selection: {args.env}")
 
 
 # image_dir = "assets"
@@ -42,8 +45,7 @@ else:
 #     payload = bytearray(f.read())
 
 # Specify the SageMaker endpoint and content type
-# endpoint_name = "defenderImageAnalyzerEndpoint"
-endpoint_name = "defenderImageAnalyzerEndpointC5i"
+endpoint_name = "soc2MlImageAnalyzerEndpointC5i"
 content_type = "application/json"
 
 payload = {

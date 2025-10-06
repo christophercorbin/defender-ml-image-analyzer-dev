@@ -198,21 +198,18 @@ jobs:
           # Login to AWS ML registry for base images
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY_BASE
           
-          # Build SOC 2 hardened image with environment tagging
+          # Build SOC 2 hardened image with standard naming convention (same as personal)
           docker build --platform linux/amd64 -f Dockerfile.hardened \
-            -t $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-latest \
-            -t $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-$COMMIT_SHA \
-            -t $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-latest .
+            -t $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:latest \
+            -t $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:$COMMIT_SHA .
           
           echo "📤 Pushing SOC 2 hardened images to ECR..."
-          docker push $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-latest
-          docker push $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-$COMMIT_SHA
-          docker push $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-latest
+          docker push $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:$COMMIT_SHA
           
           echo "✅ SOC 2 hardened images pushed successfully"
-          echo "🏷️ Environment: $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-latest"
-          echo "🏷️ Commit: $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-$ENVIRONMENT-$COMMIT_SHA"
-          echo "🏷️ Latest: $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:soc2-latest"
+          echo "📸 Latest: $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:latest"
+          echo "🏷️  Tagged: $ECR_REGISTRY/$SOC2_ECR_REPOSITORY:$COMMIT_SHA"
 
       - name: Get latest SOC 2 image digest from ECR
         id: get-soc2-image-digest

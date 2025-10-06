@@ -8,28 +8,32 @@ args = parser.parse_args()
 
 print(f'Creating model for: {args.env}')
 
-# Specify container role
-if args.env == 'dev':
-    role = 'arn:aws:iam::722568544242:role/aws-sagemaker-role' 
-elif args.env == 'stage':
-    role = 'arn:aws:iam::517812868058:role/aws-sagemaker-role' 
-else:
-    role ='arn:aws:iam::770820631445:role/dme-sagemaker-role'
+# Environment-specific configuration
+# In production, these would be loaded from environment variables or AWS Parameter Store
+env_config = {
+    'dev': {
+        'role': 'arn:aws:iam::{{DEV_ACCOUNT_ID}}:role/aws-sagemaker-role',
+        'image_url': '{{DEV_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com/soc2-ml-image-analyzer:latest'
+    },
+    'stage': {
+        'role': 'arn:aws:iam::{{STAGE_ACCOUNT_ID}}:role/aws-sagemaker-role',
+        'image_url': '{{STAGE_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com/soc2-ml-image-analyzer:latest'
+    },
+    'prod': {
+        'role': 'arn:aws:iam::{{PROD_ACCOUNT_ID}}:role/sagemaker-execution-role',
+        'image_url': '{{PROD_ACCOUNT_ID}}.dkr.ecr.us-east-1.amazonaws.com/soc2-ml-image-analyzer:latest'
+    }
+}
 
-# Specify ECR container image URL
-if args.env == 'dev':
-    image_url = '722568544242.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer:latest'
-elif args.env == 'stage':
-    image_url = '517812868058.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer:latest'
-else:
-    image_url = '770820631445.dkr.ecr.us-east-1.amazonaws.com/defender-image-analyzer:latest'
+role = env_config[args.env]['role']
+image_url = env_config[args.env]['image_url']
 
 # Initialize SageMaker client
 sagemaker = boto3.client('sagemaker', region_name='us-east-1')
 
 # Create model
 create_model_response = sagemaker.create_model(
-    ModelName='defenderImageAnalyzer',
+    ModelName='soc2MlImageAnalyzer',
     PrimaryContainer={
         'Image': image_url,
         # 'ModelDataUrl': 's3://your-bucket/your-model.tar.gz'  # Optional if your image contains the model

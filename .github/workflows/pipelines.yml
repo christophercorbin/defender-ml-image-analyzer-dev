@@ -29,7 +29,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
-          role-to-assume: arn:aws:iam::722568544242:role/Github-CICD 
+          role-to-assume: arn:aws:iam::${{ vars.DEV_ACCOUNT_ID }}:role/Github-CICD
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -40,7 +40,7 @@ jobs:
         id: build-push-ecr
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: defender-image-analyzer
+          ECR_REPOSITORY: soc2-ml-image-analyzer
           COMMIT_SHA: ${{ steps.vars.outputs.sha }}
           ECR_REGISTRY_BASE: 763104351884.dkr.ecr.us-east-1.amazonaws.com
           AWS_REGION: us-east-1
@@ -70,7 +70,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
-          role-to-assume: arn:aws:iam::722568544242:role/Github-CICD
+          role-to-assume: arn:aws:iam::${{ vars.DEV_ACCOUNT_ID }}:role/Github-CICD
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -79,7 +79,7 @@ jobs:
     # remove the existing model, create a new one and update the endpoints
       - name: Delete the existing model
         env:
-          MODEL_NAME: defenderImageAnalyzer
+          MODEL_NAME: soc2MlImageAnalyzer
         run: |
           aws sagemaker delete-model --model-name $MODEL_NAME --region us-east-1
       
@@ -101,7 +101,7 @@ jobs:
       - name: Get Latest Image Digest from ECR
         id: get-ecr-image-digest
         env:
-          ECR_REPOSITORY: defender-image-analyzer
+          ECR_REPOSITORY: soc2-ml-image-analyzer
           AWS_REGION: us-east-1
         run: |
           # Fetch the latest image digest (SHA256) from ECR
@@ -124,7 +124,7 @@ jobs:
         shell: bash  # Ensures script runs in Bash
         env:
           MAX_RETRIES: 10
-          ENDPOINT_NAME: defenderImageAnalyzerEndpointC5i
+          ENDPOINT_NAME: soc2MlImageAnalyzerEndpointC5i
           AWS_REGION: us-east-1
           RETRY_INTERVAL: 180 # 3 mins
         run: |
@@ -163,7 +163,7 @@ jobs:
         shell: bash  # Ensures script runs in Bash
         env:
           MAX_RETRIES: 10
-          ENDPOINT_NAME: defenderImageAnalyzerEndpointC6i2x
+          ENDPOINT_NAME: soc2MlImageAnalyzerEndpointC6i2x
           AWS_REGION: us-east-1
           RETRY_INTERVAL: 180 # 3 mins
         run: |
@@ -218,11 +218,11 @@ jobs:
         id: vars
         run: echo "::set-output name=sha::$(git rev-parse --short HEAD)"
 
-      - name: Configure AWS Credentials for prod
+      - name: Configure AWS Credentials for stage
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
-          role-to-assume: arn:aws:iam::517812868058:role/Github-CICD
+          role-to-assume: arn:aws:iam::${{ vars.STAGE_ACCOUNT_ID }}:role/Github-CICD
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -232,7 +232,7 @@ jobs:
         id: build-push-ecr
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: defender-image-analyzer
+          ECR_REPOSITORY: soc2-ml-image-analyzer
           COMMIT_SHA: ${{ steps.vars.outputs.sha }}
           ECR_REGISTRY_BASE: 763104351884.dkr.ecr.us-east-1.amazonaws.com
           AWS_REGION: us-east-1
@@ -246,7 +246,7 @@ jobs:
       # remove the existing model, create a new one and update the endpoints
       - name: Delete the existing model
         env:
-          MODEL_NAME: defenderImageAnalyzer
+          MODEL_NAME: soc2MlImageAnalyzer
         run: |
           aws sagemaker delete-model --model-name $MODEL_NAME --region us-east-1
 
@@ -268,7 +268,7 @@ jobs:
       - name: Get Latest Image Digest from ECR
         id: get-ecr-image-digest
         env:
-          ECR_REPOSITORY: defender-image-analyzer
+          ECR_REPOSITORY: soc2-ml-image-analyzer
           AWS_REGION: us-east-1
         run: |
           # Fetch the latest image digest (SHA256) from ECR
@@ -291,7 +291,7 @@ jobs:
         shell: bash  # Ensures script runs in Bash
         env:
           MAX_RETRIES: 10
-          ENDPOINT_NAME: defenderImageAnalyzerEndpointC5i
+          ENDPOINT_NAME: soc2MlImageAnalyzerEndpointC5i
           AWS_REGION: us-east-1
           RETRY_INTERVAL: 180 # 3 mins
         run: |
@@ -330,7 +330,7 @@ jobs:
         shell: bash  # Ensures script runs in Bash
         env:
           MAX_RETRIES: 10
-          ENDPOINT_NAME: defenderImageAnalyzerEndpointC6i2x
+          ENDPOINT_NAME: soc2MlImageAnalyzerEndpointC6i2x
           AWS_REGION: us-east-1
           RETRY_INTERVAL: 180 # 3 mins
         run: |
@@ -383,7 +383,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
-          role-to-assume: arn:aws:iam::770820631445:role/Github-CICD
+          role-to-assume: arn:aws:iam::${{ vars.PROD_ACCOUNT_ID }}:role/Github-CICD
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -393,7 +393,7 @@ jobs:
         id: build-push-ecr
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: defender-image-analyzer
+          ECR_REPOSITORY: soc2-ml-image-analyzer
           COMMIT_SHA: ${{ steps.vars.outputs.sha }}
           ECR_REGISTRY_BASE: 763104351884.dkr.ecr.us-east-1.amazonaws.com
           AWS_REGION: us-east-1
@@ -407,7 +407,7 @@ jobs:
       # remove the existing model, create a new one and update the endpoints
       - name: Delete the existing model
         env:
-          MODEL_NAME: defenderImageAnalyzer
+          MODEL_NAME: soc2MlImageAnalyzer
         run: |
           aws sagemaker delete-model --model-name $MODEL_NAME --region us-east-1
 
@@ -429,7 +429,7 @@ jobs:
       - name: Get Latest Image Digest from ECR
         id: get-ecr-image-digest
         env:
-          ECR_REPOSITORY: defender-image-analyzer
+          ECR_REPOSITORY: soc2-ml-image-analyzer
           AWS_REGION: us-east-1
         run: |
           # Fetch the latest image digest (SHA256) from ECR
@@ -452,7 +452,7 @@ jobs:
         shell: bash  # Ensures script runs in Bash
         env:
           MAX_RETRIES: 10
-          ENDPOINT_NAME: defenderImageAnalyzerEndpointC5i
+          ENDPOINT_NAME: soc2MlImageAnalyzerEndpointC5i
           AWS_REGION: us-east-1
           RETRY_INTERVAL: 180 # 3 mins
         run: |
@@ -491,7 +491,7 @@ jobs:
         shell: bash  # Ensures script runs in Bash
         env:
           MAX_RETRIES: 10
-          ENDPOINT_NAME: defenderImageAnalyzerEndpointC6i2x
+          ENDPOINT_NAME: soc2MlImageAnalyzerEndpointC6i2x
           AWS_REGION: us-east-1
           RETRY_INTERVAL: 180 # 3 mins
         run: |

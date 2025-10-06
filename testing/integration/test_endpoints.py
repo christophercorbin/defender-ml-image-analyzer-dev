@@ -7,9 +7,9 @@ import numpy as np
 # Initialize the SageMaker client
 client = boto3.client('sagemaker-runtime', 'us-east-1')
 
-endpoint_name_1 = "defenderImageAnalyzerEndpointC5i"
-endpoint_name_2 = "defenderImageAnalyzerEndpointC6i2x"
-bucket = "defender-image-reverse-search-4242"
+endpoint_name_1 = "soc2MlImageAnalyzerEndpointC5i"
+endpoint_name_2 = "soc2MlImageAnalyzerEndpointC6i2x"
+bucket = "soc2-ml-image-analyzer-test-bucket"
 key = "trudeau.jpg"
 content_type = "application/json"
 
